@@ -18,14 +18,14 @@
 package pushsrv
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
-	"bytes"
 	"fmt"
+	. "github.com/uniqush/pushsys"
 	"io/ioutil"
 	"net/http"
-	. "github.com/uniqush/pushsys"
 )
 
 const (
@@ -105,11 +105,11 @@ func (p *gcmPushService) Name() string {
 }
 
 type gcmData struct {
-	RegIDs []string `json:"registration_ids"`
-	CollapseKey string `json:"collapse_key,omitempty"`
-	Data map[string]string `json:"data"`
-	DelayWhileIdle bool `json:"delay_while_idle,omitempty"`
-	TimeToLive uint `json:"time_to_live,omitempty"`
+	RegIDs         []string          `json:"registration_ids"`
+	CollapseKey    string            `json:"collapse_key,omitempty"`
+	Data           map[string]string `json:"data"`
+	DelayWhileIdle bool              `json:"delay_while_idle,omitempty"`
+	TimeToLive     uint              `json:"time_to_live,omitempty"`
 }
 
 func (d *gcmData) String() string {
@@ -121,11 +121,11 @@ func (d *gcmData) String() string {
 }
 
 type gcmResult struct {
-	MulticastID uint64 `json:"multicast_id"`
-	Success uint `json:"success"`
-	Failure uint `json:"failure"`
-	CanonicalIDs uint `json:"canonical_ids"`
-	Results []map[string]string `json:"results"`
+	MulticastID  uint64              `json:"multicast_id"`
+	Success      uint                `json:"success"`
+	Failure      uint                `json:"failure"`
+	CanonicalIDs uint                `json:"canonical_ids"`
+	Results      []map[string]string `json:"results"`
 }
 
 func (p *gcmPushService) Push(psp *PushServiceProvider,
@@ -238,4 +238,3 @@ func (p *gcmPushService) Push(psp *PushServiceProvider,
 
 	return result.Results[0]["message_id"], nil
 }
-

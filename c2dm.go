@@ -22,12 +22,12 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	. "github.com/uniqush/pushsys"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
-	. "github.com/uniqush/pushsys"
 )
 
 const (

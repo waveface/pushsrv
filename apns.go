@@ -20,17 +20,17 @@ package pushsrv
 import (
 	"bytes"
 	"crypto/tls"
-	"errors"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	. "github.com/uniqush/pushsys"
 	"io"
 	"net"
 	"strconv"
 	"sync/atomic"
 	"time"
-	. "github.com/uniqush/pushsys"
 )
 
 type apnsPushService struct {
@@ -234,7 +234,7 @@ func (p *apnsPushService) reconnect(psp *PushServiceProvider) (net.Conn, error) 
 		return nil, NewInvalidPushServiceProviderError(psp, err)
 	}
 	conf := &tls.Config{
-		Certificates: []tls.Certificate{cert},
+		Certificates:       []tls.Certificate{cert},
 		InsecureSkipVerify: true,
 	}
 	tlsconn, err := tls.Dial("tcp", psp.VolatileData["addr"], conf)
