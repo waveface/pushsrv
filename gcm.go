@@ -128,9 +128,7 @@ type gcmResult struct {
 	Results      []map[string]string `json:"results"`
 }
 
-func (p *gcmPushService) Push(psp *PushServiceProvider,
-	dp *DeliveryPoint,
-	n *Notification) (string, error) {
+func (p *gcmPushService) Push(psp *PushServiceProvider, dp *DeliveryPoint, n *Notification) (string, error) {
 	if psp.PushServiceName() != dp.PushServiceName() ||
 		psp.PushServiceName() != p.Name() {
 		return "", NewPushIncompatibleError(psp, dp, p)
@@ -144,7 +142,11 @@ func (p *gcmPushService) Push(psp *PushServiceProvider,
 	data.TimeToLive = 0
 	data.DelayWhileIdle = false
 
-	data.RegIDs[0] = dp.FixedData["regid"]
+	if regID, ok := dp.VolatileData["regid"]; ok {
+		data.RegIDs[0] = regID
+	} else {
+		data.RegIDs[0] = dp.FixedData["regid"]
+	}
 	if len(data.RegIDs[0]) == 0 {
 		reterr := NewInvalidDeliveryPointError(psp, dp, errors.New("EmptyRegistrationID"))
 		return "", reterr
@@ -232,9 +234,25 @@ func (p *gcmPushService) Push(psp *PushServiceProvider,
 		return "", err
 	}
 
+    if errmsg, ok := result.Results[0]["error"]; ok {
+        if errmsg == "Unavailable" {
+            after := -1
+            reterr := NewRetryError(after)
+            return "", reterr
+        }
+		return "", errors.New("GCMErr" + errmsg)
+    }
+
 	if result.Failure > 0 {
 		return "", errors.New(string(contents))
 	}
+
+    if newregid, ok := result.Results[0]["registration_id"]; ok {
+        newdp := dp.Copy()
+		newdp.VolatileData["regid"] = newregid
+        reterr := NewRefreshDataError(nil, newdp, nil)
+        return "", reterr
+    }
 
 	return result.Results[0]["message_id"], nil
 }
