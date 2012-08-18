@@ -128,29 +128,24 @@ type gcmResult struct {
 	Results      []map[string]string `json:"results"`
 }
 
-func (p *gcmPushService) Push(psp *PushServiceProvider, dp *DeliveryPoint, n *Notification) (string, error) {
-	if psp.PushServiceName() != dp.PushServiceName() ||
-		psp.PushServiceName() != p.Name() {
-		return "", NewPushIncompatibleError(psp, dp, p)
+func (self *gcmPushService) multicast(psp *PushServiceProvider, dpList []*DeliveryPoint, resQueue <-chan *PushResult, notif *Notification) {
+	if len(dpList) == 0 {
+		return
 	}
 
-	msg := n.Data
+	regIds := make([]string, 0, len(dpList))
+
+	for _, dp := range dpList {
+		regIds = append(regIds, dp.VolatileData["regid"])
+	}
+	msg := notif.Data
 	data := new(gcmData)
-	data.RegIDs = make([]string, 1)
+	data.RegIDs = regIds
 
 	// TODO do something with ttl and delay_while_idle
 	data.TimeToLive = 0
 	data.DelayWhileIdle = false
 
-	if regID, ok := dp.VolatileData["regid"]; ok {
-		data.RegIDs[0] = regID
-	} else {
-		data.RegIDs[0] = dp.FixedData["regid"]
-	}
-	if len(data.RegIDs[0]) == 0 {
-		reterr := NewInvalidDeliveryPointError(psp, dp, errors.New("EmptyRegistrationID"))
-		return "", reterr
-	}
 	if mgroup, ok := msg["msggroup"]; ok {
 		data.CollapseKey = mgroup
 	} else {
@@ -169,15 +164,32 @@ func (p *gcmPushService) Push(psp *PushServiceProvider, dp *DeliveryPoint, n *No
 		}
 	}
 
-	jdata, err := json.Marshal(data)
-
+	jdata, e0 := json.Marshal(data)
 	if err != nil {
-		return "", errors.New("Json encoding error: " + err.Error())
+		for _, dp := dpList {
+			res := new(PushResult)
+			res.Provider = psp
+			res.Content = notif
+
+			res.Err = e0
+			res.Destination = dp
+			resQueue<-res
+		}
+		return
 	}
 
-	req, err := http.NewRequest("POST", gcmServiceURL, bytes.NewReader(jdata))
+	req, e1 := http.NewRequest("POST", gcmServiceURL, bytes.NewReader(jdata))
 	if err != nil {
-		return "", err
+		for _, dp := dpList {
+			res := new(PushResult)
+			res.Provider = psp
+			res.Content = notif
+
+			res.Err = e1
+			res.Destination = dp
+			resQueue<-res
+		}
+		return
 	}
 
 	apikey := psp.VolatileData["apikey"]
@@ -189,70 +201,152 @@ func (p *gcmPushService) Push(psp *PushServiceProvider, dp *DeliveryPoint, n *No
 	tr := &http.Transport{TLSClientConfig: conf}
 	client := &http.Client{Transport: tr}
 
-	fmt.Printf("Sending data %v\n", data)
+	r, e2 := client.Do(req)
+	if e2 != nil {
+		for _, dp := dpList {
+			res := new(PushResult)
+			res.Provider = psp
+			res.Content = notif
 
-	r, e20 := client.Do(req)
-	if e20 != nil {
-		return "", e20
+			res.Err = e2
+			res.Destination = dp
+			resQueue<-res
+		}
+		return
 	}
 	refreshpsp := false
 	new_auth_token := r.Header.Get("Update-Client-Auth")
 	if new_auth_token != "" && apikey != new_auth_token {
 		psp.VolatileData["apikey"] = new_auth_token
-		refreshpsp = true
+		res.Err = NewPushServiceProviderUpdate(psp)
+		resQueue<-res
 	}
 
-	// TODO More GCM specific error handle
 	switch r.StatusCode {
 	case 503:
+		fallthrough
+	case 500:
 		/* TODO extract the retry after field */
-		after := -1
-		var reterr error
-		reterr = NewRetryError(after)
-		if refreshpsp {
-			re := NewRefreshDataError(psp, nil, reterr)
-			reterr = re
+		after, _  := time.ParseDuration("2s")
+		for _, dp := dpList {
+			res := new(PushResult)
+			res.Provider = psp
+			res.Content = notif
+			err := NewRetryError(after)
+			res.Err = err
+			res.Destination = dp
+			resQueue<-res
 		}
-		return "", reterr
+		return
 	case 401:
-		return "", NewInvalidPushServiceProviderError(psp, errors.New("Invalid Auth Token"))
+		err := NewBadPushServiceProvider(psp)
+		res.Err = err
+		resQueue<-res
+		return
+	case 400:
+		err := NewBadNotification()
+		res.Err = err
+		resQueue<-res
+		return
 	}
 
-	contents, e30 := ioutil.ReadAll(r.Body)
-	if e30 != nil {
-		if refreshpsp {
-			re := NewRefreshDataError(psp, nil, e30)
-			e30 = re
-		}
-		return "", e30
+	contents, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		res := new(PushResult)
+		res.Provider = psp
+		res.Content = notif
+		res.Err = err
+		resQueue<-res
+		return
 	}
 
 	var result gcmResult
 	err = json.Unmarshal(contents, &result)
 
 	if err != nil {
-		return "", err
+		res := new(PushResult)
+		res.Provider = psp
+		res.Content = notif
+		res.Err = err
+		resQueue<-res
+		return
 	}
 
-    if errmsg, ok := result.Results[0]["error"]; ok {
-        if errmsg == "Unavailable" {
-            after := -1
-            reterr := NewRetryError(after)
-            return "", reterr
-        }
-		return "", errors.New("GCMErr" + errmsg)
-    }
-
-	if result.Failure > 0 {
-		return "", errors.New(string(contents))
+	for i, r := range result.Results {
+		if i >= len(dpList) {
+			break
+		}
+		dp := dpList[i]
+		if errmsg, ok := r["error"]; ok {
+			switch (errmsg) {
+			case "Unavailable":
+				after, _  := time.ParseDuration("2s")
+				res := new(PushResult)
+				res.Err = NewRetryError(after)
+				res.Provider = psp
+				res.Content = notif
+				res.Destination = dp
+				resQueue<-res
+			case "NotRegistered":
+				res := new(PushResult)
+				res.Err = NewUnregisterUpdate(dp)
+				res.Provider = psp
+				res.Content = notif
+				res.Destination = dp
+				resQueue<-res
+			default:
+				res := new(PushResult)
+				res.Err = fmt.Errorf("GCMError: %v", errmsg)
+				res.Provider = psp
+				res.Content = notif
+				res.Destination = dp
+				resQueue<-res
+			}
+		}
+		if newregid, ok := r["registration_id"]; ok {
+			dp.VolatileData["regid"] = newregid
+			res := new(PushResult)
+			res.Err = NewDeliveryPointUpdate(dp)
+			res.Provider = psp
+			res.Content = notif
+			res.Destination = dp
+			resQueue<-res
+		}
+		if msgid, ok := r["message_id"]; ok {
+			res := new(PushResult)
+			res.Provider = psp
+			res.Content = notif
+			res.Destination = dp
+			res.MsgId = msgid
+			resQueue<-res
+		}
 	}
 
-    if newregid, ok := result.Results[0]["registration_id"]; ok {
-        newdp := dp.Copy()
-		newdp.VolatileData["regid"] = newregid
-        reterr := NewRefreshDataError(nil, newdp, nil)
-        return "", reterr
-    }
-
-	return result.Results[0]["message_id"], nil
 }
+
+func (self *gcmPushService) Push(psp *PushServiceProvider, dpQueue <-chan *DeliveryPoint, resQueue <-chan *PushResult, notif *Notification) {
+
+	maxNrDst := 1000
+	dpList := make([]*DeliveryPoint, 0, maxNrDst)
+	for dp := range dpQueue {
+		if _, ok := dp.VolatileData["regid"]; ok {
+			dpList = append(dpList, dp)
+		} else if regid, ok := dp.FixedData["regid"]; ok {
+			dp.VolatileData["regid"] = regid
+			dpList = append(dpList, dp)
+		} else {
+			res := new(PushResult)
+			res.Provider = psp
+			res.Destination = dp
+			res.Content = notif
+			res.Err = NewBadDeliveryPoint(dp)
+			resQueue<-res
+			continue
+		}
+
+		if len(dpList) >= maxNrDst {
+			self.multicast(psp, dplist, resQueue, notif)
+		}
+	}
+}
+
