@@ -249,7 +249,10 @@ func (p *apnsPushService) reconnect(psp *PushServiceProvider) (net.Conn, error) 
 	return tlsconn, nil
 }
 
-func (p *apnsPushService) Push(sp *PushServiceProvider,
+func (self *apnsPushService) Push(psp *PushServiceProvider, dpQueue <-chan *DeliveryPoint, resQueue chan<- *PushResult, notif *Notification) {
+}
+
+func (p *apnsPushService) singlePush(sp *PushServiceProvider,
 	s *DeliveryPoint,
 	n *Notification) (string, error) {
 	devtoken := s.FixedData["devtoken"]

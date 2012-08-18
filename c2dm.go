@@ -105,7 +105,10 @@ func (p *c2dmPushService) Name() string {
 	return "c2dm"
 }
 
-func (p *c2dmPushService) Push(psp *PushServiceProvider,
+func (self *c2dmPushService) Push(psp *PushServiceProvider, dpQueue <-chan *DeliveryPoint, resQueue chan<- *PushResult, notif *Notification) {
+}
+
+func (p *c2dmPushService) singlePush(psp *PushServiceProvider,
 	dp *DeliveryPoint,
 	n *Notification) (string, error) {
 	if psp.PushServiceName() != dp.PushServiceName() ||
@@ -175,7 +178,7 @@ func (p *c2dmPushService) Push(psp *PushServiceProvider,
 	switch r.StatusCode {
 	case 503:
 		/* TODO extract the retry after field */
-		after := -1
+		after, _ := time.ParseDuration("2s")
 		var reterr error
 		reterr = NewRetryError(after)
 		if refreshpsp {

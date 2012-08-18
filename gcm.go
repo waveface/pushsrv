@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 	. "github.com/uniqush/pushsys"
 	"io/ioutil"
 	"net/http"
@@ -128,7 +129,7 @@ type gcmResult struct {
 	Results      []map[string]string `json:"results"`
 }
 
-func (self *gcmPushService) multicast(psp *PushServiceProvider, dpList []*DeliveryPoint, resQueue <-chan *PushResult, notif *Notification) {
+func (self *gcmPushService) multicast(psp *PushServiceProvider, dpList []*DeliveryPoint, resQueue chan<- *PushResult, notif *Notification) {
 	if len(dpList) == 0 {
 		return
 	}
@@ -165,8 +166,8 @@ func (self *gcmPushService) multicast(psp *PushServiceProvider, dpList []*Delive
 	}
 
 	jdata, e0 := json.Marshal(data)
-	if err != nil {
-		for _, dp := dpList {
+	if e0 != nil {
+		for _, dp := range dpList {
 			res := new(PushResult)
 			res.Provider = psp
 			res.Content = notif
@@ -179,8 +180,8 @@ func (self *gcmPushService) multicast(psp *PushServiceProvider, dpList []*Delive
 	}
 
 	req, e1 := http.NewRequest("POST", gcmServiceURL, bytes.NewReader(jdata))
-	if err != nil {
-		for _, dp := dpList {
+	if e1 != nil {
+		for _, dp := range dpList {
 			res := new(PushResult)
 			res.Provider = psp
 			res.Content = notif
@@ -203,7 +204,7 @@ func (self *gcmPushService) multicast(psp *PushServiceProvider, dpList []*Delive
 
 	r, e2 := client.Do(req)
 	if e2 != nil {
-		for _, dp := dpList {
+		for _, dp := range dpList {
 			res := new(PushResult)
 			res.Provider = psp
 			res.Content = notif
@@ -214,10 +215,12 @@ func (self *gcmPushService) multicast(psp *PushServiceProvider, dpList []*Delive
 		}
 		return
 	}
-	refreshpsp := false
 	new_auth_token := r.Header.Get("Update-Client-Auth")
 	if new_auth_token != "" && apikey != new_auth_token {
 		psp.VolatileData["apikey"] = new_auth_token
+		res := new(PushResult)
+		res.Provider = psp
+		res.Content = notif
 		res.Err = NewPushServiceProviderUpdate(psp)
 		resQueue<-res
 	}
@@ -228,23 +231,29 @@ func (self *gcmPushService) multicast(psp *PushServiceProvider, dpList []*Delive
 	case 500:
 		/* TODO extract the retry after field */
 		after, _  := time.ParseDuration("2s")
-		for _, dp := dpList {
+		for _, dp := range dpList {
 			res := new(PushResult)
 			res.Provider = psp
 			res.Content = notif
+			res.Destination = dp
 			err := NewRetryError(after)
 			res.Err = err
-			res.Destination = dp
 			resQueue<-res
 		}
 		return
 	case 401:
 		err := NewBadPushServiceProvider(psp)
+		res := new(PushResult)
+		res.Provider = psp
+		res.Content = notif
 		res.Err = err
 		resQueue<-res
 		return
 	case 400:
 		err := NewBadNotification()
+		res := new(PushResult)
+		res.Provider = psp
+		res.Content = notif
 		res.Err = err
 		resQueue<-res
 		return
@@ -289,7 +298,7 @@ func (self *gcmPushService) multicast(psp *PushServiceProvider, dpList []*Delive
 				resQueue<-res
 			case "NotRegistered":
 				res := new(PushResult)
-				res.Err = NewUnregisterUpdate(dp)
+				res.Err = NewUnsubscribeUpdate(dp)
 				res.Provider = psp
 				res.Content = notif
 				res.Destination = dp
@@ -324,7 +333,7 @@ func (self *gcmPushService) multicast(psp *PushServiceProvider, dpList []*Delive
 
 }
 
-func (self *gcmPushService) Push(psp *PushServiceProvider, dpQueue <-chan *DeliveryPoint, resQueue <-chan *PushResult, notif *Notification) {
+func (self *gcmPushService) Push(psp *PushServiceProvider, dpQueue <-chan *DeliveryPoint, resQueue chan<- *PushResult, notif *Notification) {
 
 	maxNrDst := 1000
 	dpList := make([]*DeliveryPoint, 0, maxNrDst)
@@ -345,7 +354,7 @@ func (self *gcmPushService) Push(psp *PushServiceProvider, dpQueue <-chan *Deliv
 		}
 
 		if len(dpList) >= maxNrDst {
-			self.multicast(psp, dplist, resQueue, notif)
+			self.multicast(psp, dpList, resQueue, notif)
 		}
 	}
 }
