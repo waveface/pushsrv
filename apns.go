@@ -30,12 +30,22 @@ import (
 	"net"
 	"strconv"
 	"sync/atomic"
+	"sync"
 	"time"
 )
+
+type pushRequest struct {
+	dp *DeliveryPoint
+	notif *Notification
+	mid uint32
+	resChan chan<- *PushResult
+}
 
 type apnsPushService struct {
 	nextid uint32
 	conns  map[string]net.Conn
+	connChan map[string]chan *pushRequest
+	lock *sync.Mutex
 	pfp    PushFailureHandler
 }
 
@@ -46,6 +56,8 @@ func InstallAPNS() {
 func newAPNSPushService() *apnsPushService {
 	ret := new(apnsPushService)
 	ret.conns = make(map[string]net.Conn, 5)
+	ret.connChan = make(map[string]chan *pushRequest, 5)
+	ret.lock = new(sync.Mutex)
 	return ret
 }
 
@@ -249,7 +261,86 @@ func (p *apnsPushService) reconnect(psp *PushServiceProvider) (net.Conn, error) 
 	return tlsconn, nil
 }
 
+func (self *apnsPushService) singlePush(psp *PushServiceProvider, dp *DeliveryPoint, notif *Notification, mid uint32) {
+	devtoken :=
+}
+
+func (self *apnsPushService) getRequestChannel(psp *PushServiceProvider) chan *pushRequest{
+	var ch chan *pushRequest
+	var ok bool
+	self.lock.Lock()
+	if ch, ok = self.connChan[psp.Name()]; !ok {
+		ch = make(chan *pushRequest)
+		self.connChan[psp.Name()] = ch
+		go pushWorker(psp, ch)
+	}
+	self.lock.Unlock()
+	return ch
+}
+
+type struct apnsResult {
+	msgId uint32
+	err error
+}
+
 func (self *apnsPushService) Push(psp *PushServiceProvider, dpQueue <-chan *DeliveryPoint, resQueue chan<- *PushResult, notif *Notification) {
+	/* First, get the request channel */
+	ch := self.getRequestChannel(psp)
+
+	resultChannel := make(chan *PushResult)
+
+	nrMsgs := 0
+	msgMap := make(map[uint32]
+
+	for dp := range dpQueue {
+		req := new(pushRequest)
+		req.dp = dp
+		req.notif = notif
+		req.resChan = resultChannel
+		res.mid := atomic.AddUint32(&(self.nextid), 1)
+		nrMsgs++
+
+		ch<-req
+	}
+
+	for {
+		select {
+		case res := <-resultChannel:
+			resQueue <- res
+		case <-time.After(time.ParseDuration("5s"))
+			break
+		}
+	}
+}
+
+func (self *apnsPushService) resultCollector(psp *PushServiceProvider, resChan chan<- *apnsResult) {
+}
+
+func (self *apnsPushService) pushWorker(psp *PushServiceProvider, reqChan chan *pushRequest) {
+	resChan := make(chan *apnsResult)
+
+	reqIdMap := make(map[uint32]*pushRequest)
+	go resultCollector(psp, resChan)
+	for {
+		select {
+		case req := <-reqChan:
+			dp := req.dp
+			notif := req.notif
+			mid := req.mid
+			reqIdMap[mid] = req
+
+			self.singlePush(psp, dp, notif, mid)
+		case apnsres := <-resChan:
+			if req, ok := reqIdMap[apnsres.msgId]; ok {
+				result := new(PushResult)
+				result.Content = req.notif
+				result.Provider = psp
+				result.Destination = req.dp
+				result.MsgId = fmt.Sprintf("%d", apnsres.msgId)
+				req.resChan<-result
+			}
+		}
+	}
 }
 
 func (p *apnsPushService) singlePush(sp *PushServiceProvider,
