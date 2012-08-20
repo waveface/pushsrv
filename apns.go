@@ -44,8 +44,10 @@ type pushRequest struct {
 type apnsPushService struct {
 	nextid uint32
 	conns  map[string]net.Conn
+	connLock *sync.Mutex
+
 	connChan map[string]chan *pushRequest
-	lock *sync.Mutex
+	chanLock *sync.Mutex
 	pfp    PushFailureHandler
 }
 
@@ -57,7 +59,8 @@ func newAPNSPushService() *apnsPushService {
 	ret := new(apnsPushService)
 	ret.conns = make(map[string]net.Conn, 5)
 	ret.connChan = make(map[string]chan *pushRequest, 5)
-	ret.lock = new(sync.Mutex)
+	ret.chanLock = new(sync.Mutex)
+	ret.connLock= new(sync.Mutex)
 	return ret
 }
 
@@ -184,12 +187,15 @@ func (p *apnsPushService) getConn(psp *PushServiceProvider) (net.Conn, error) {
 
 func (p *apnsPushService) reconnect(psp *PushServiceProvider) (net.Conn, error) {
 	name := psp.Name()
+	p.connLock.Lock()
+	defer p.connLock.Unlock()
+
 	if conn, ok := p.conns[name]; ok {
 		conn.Close()
 	}
 	cert, err := tls.LoadX509KeyPair(psp.FixedData["cert"], psp.FixedData["key"])
 	if err != nil {
-		return nil, NewInvalidPushServiceProviderError(psp, err)
+		return nil, NewBadPushServiceProviderWithDetails(psp, err.Error())
 	}
 	conf := &tls.Config{
 		Certificates:       []tls.Certificate{cert},
@@ -197,35 +203,33 @@ func (p *apnsPushService) reconnect(psp *PushServiceProvider) (net.Conn, error) 
 	}
 	tlsconn, err := tls.Dial("tcp", psp.VolatileData["addr"], conf)
 	if err != nil {
-		return nil, NewConnectionError(psp, err, "DialErr")
+		return nil, NewConnectionError(err)
 	}
 	err = tlsconn.Handshake()
 	if err != nil {
-		return nil, NewConnectionError(psp, err, "HandshakeErr")
+		return nil, NewConnectionError(err)
 	}
 	p.conns[name] = tlsconn
 	return tlsconn, nil
 }
 
-func (self *apnsPushService) singlePush(psp *PushServiceProvider, dp *DeliveryPoint, notif *Notification, mid uint32) {
-	devtoken :=
-}
 
 func (self *apnsPushService) getRequestChannel(psp *PushServiceProvider) chan *pushRequest{
 	var ch chan *pushRequest
 	var ok bool
-	self.lock.Lock()
+	self.chanLock.Lock()
 	if ch, ok = self.connChan[psp.Name()]; !ok {
 		ch = make(chan *pushRequest)
 		self.connChan[psp.Name()] = ch
-		go pushWorker(psp, ch)
+		go self.pushWorker(psp, ch)
 	}
-	self.lock.Unlock()
+	self.chanLock.Unlock()
 	return ch
 }
 
-type struct apnsResult {
+type apnsResult struct {
 	msgId uint32
+	status uint8
 	err error
 }
 
@@ -240,78 +244,26 @@ func (self *apnsPushService) Push(psp *PushServiceProvider, dpQueue <-chan *Deli
 			req.dp = dp
 			req.notif = notif
 			req.resChan = resultChannel
-			res.mid := atomic.AddUint32(&(self.nextid), 1)
+			req.mid = atomic.AddUint32(&(self.nextid), 1)
 
 			ch<-req
 
-			select {
-			case res := <-resultChannel:
-				resQueue <-
-			case <-time.After(time.ParseDuration("5s")):
-				return
+			for {
+				select {
+				case res := <-resultChannel:
+					resQueue <- res
+				case <-time.After(5 * time.Second):
+					return
 
+				}
 			}
 
 		}()
 	}
 }
 
-func (p *apnsPushService) waitError(id string,
-	c net.Conn,
-	psp *PushServiceProvider,
-	dp *DeliveryPoint,
-	n *Notification) {
-	duration, err := time.ParseDuration("5s")
-	if err != nil {
-		return
-	}
-	deadline := time.Now().Add(duration)
-	//c.SetReadTimeout(5E9)
-	err = c.SetDeadline(deadline)
-	if err != nil {
-		return
-	}
-	readb := [6]byte{}
-	nr, err := c.Read(readb[:])
-	if err != nil {
-		return
-	}
-	if nr > 0 {
-		switch readb[1] {
-		case 2:
-			p.pfp.OnPushFail(p,
-				id,
-				NewInvalidDeliveryPointError(psp,
-					dp,
-					errors.New("Missing device token")))
-		case 3:
-			err := NewInvalidNotification(psp, dp, n, errors.New("Missing topic"))
-			p.pfp.OnPushFail(p, id, err)
-		case 4:
-			err := NewInvalidNotification(psp, dp, n, errors.New("Missing payload"))
-			p.pfp.OnPushFail(p, id, err)
-		case 5:
-			err := NewInvalidNotification(psp, dp, n, errors.New("Invalid token size"))
-			p.pfp.OnPushFail(p, id, err)
-		case 6:
-			err := NewInvalidNotification(psp, dp, n, errors.New("Invalid topic size"))
-			p.pfp.OnPushFail(p, id, err)
-		case 7:
-			err := NewInvalidNotification(psp, dp, n, errors.New("Invalid payload size"))
-			p.pfp.OnPushFail(p, id, err)
-		case 8:
-			err := NewInvalidDeliveryPointError(psp, dp, errors.New("Invalid token"))
-			p.pfp.OnPushFail(p, id, err)
-		default:
-			err := errors.New("Unknown Error")
-			p.pfp.OnPushFail(p, id, err)
-		}
-	}
-}
-
-
-func (self *apnsPushService) resultCollector(psp *PushServiceProvider, resChan chan<- *apnsResult, quit <-chan bool) {
-	c, err := getConn(psp)
+func (self *apnsPushService) resultCollector(psp *PushServiceProvider, resChan chan<- *apnsResult) {
+	c, err := self.getConn(psp)
 	if err != nil {
 		res := new(apnsResult)
 		res.err = NewConnectionError(err)
@@ -320,7 +272,7 @@ func (self *apnsPushService) resultCollector(psp *PushServiceProvider, resChan c
 	}
 
 	for {
-		readb := [6]byte{}
+		readb := make([]byte, 6)
 		nr, err := c.Read(readb[:])
 		if err != nil {
 			res := new(apnsResult)
@@ -367,29 +319,66 @@ func (self *apnsPushService) resultCollector(psp *PushServiceProvider, resChan c
 
 		res := new(apnsResult)
 		res.msgId = msgid
-
-		switch status {
-		case 0:
-			res.err = nil
-		case 2:
-			fallthrough
-		case 8:
-			res.err = NewBadDeliveryPoint(psp)
-		case 3:
-			fallthrough
-		case 4:
-			fallthrough
-		case 5:
-			fallthrough
-		case 6:
-			fallthrough
-		case 7:
-			res.err = NewBadNotification()
-		default:
-			res.err = fmt.Errorf("Unknown Error: %d", status)
-		}
+		res.status = status
 		resChan<-res
 	}
+}
+
+func (self *apnsPushService) singlePush(psp *PushServiceProvider, dp *DeliveryPoint, notif *Notification, mid uint32) error {
+	devtoken := dp.FixedData["devtoken"]
+
+	btoken, err := hex.DecodeString(devtoken)
+	if err != nil {
+		return NewBadDeliveryPointWithDetails(dp, err.Error())
+	}
+
+	bpayload, err := toAPNSPayload(notif)
+	if err != nil {
+		return NewBadNotificationWithDetails(err.Error())
+	}
+
+	buffer := bytes.NewBuffer([]byte{})
+
+	// command
+	binary.Write(buffer, binary.BigEndian, uint8(1))
+
+	// transaction id
+	binary.Write(buffer, binary.BigEndian, mid)
+
+	// TODO Expiry
+	expiry := uint32(time.Now().Second() + 60*60)
+	binary.Write(buffer, binary.BigEndian, expiry)
+
+	// device token
+	binary.Write(buffer, binary.BigEndian, uint16(len(btoken)))
+	binary.Write(buffer, binary.BigEndian, btoken)
+
+	// payload
+	binary.Write(buffer, binary.BigEndian, uint16(len(bpayload)))
+	binary.Write(buffer, binary.BigEndian, bpayload)
+	pdu := buffer.Bytes()
+
+	tlsconn, err := self.getConn(psp)
+	if err != nil {
+		return NewConnectionError(err)
+	}
+
+	for i := 0; i < 2; i++ {
+		err = writen(tlsconn, pdu)
+		if err != nil {
+			tlsconn, err = self.reconnect(psp)
+			if err != nil {
+				return NewConnectionError(err)
+			}
+		} else {
+			break
+		}
+	}
+	if err != nil {
+		return NewConnectionError(err)
+	}
+
+	return nil
 }
 
 func (self *apnsPushService) pushWorker(psp *PushServiceProvider, reqChan chan *pushRequest) {
@@ -401,7 +390,7 @@ func (self *apnsPushService) pushWorker(psp *PushServiceProvider, reqChan chan *
 
 	connErr = nil
 
-	go resultCollector(psp, resChan)
+	go self.resultCollector(psp, resChan)
 	for {
 		select {
 		case req := <-reqChan:
@@ -428,99 +417,57 @@ func (self *apnsPushService) pushWorker(psp *PushServiceProvider, reqChan chan *
 				result.Content = notif
 				result.Provider = psp
 				result.Destination = dp
-				result.MsgId = fmt.Sprintf("%v", mid)
+				result.MsgId = fmt.Sprintf("apns:%v-%v", psp.Name(), mid)
 				result.Err = err
 				req.resChan<-result
-				delete(reqIdMap[mid])
+				delete(reqIdMap, mid)
 			}
 
 		case apnsres := <-resChan:
 			if cerr, ok := apnsres.err.(*ConnectionError); ok {
 				connErr = cerr
 			}
+
 			if req, ok := reqIdMap[apnsres.msgId]; ok {
 				result := new(PushResult)
 				result.Content = req.notif
 				result.Provider = psp
 				result.Destination = req.dp
 				result.MsgId = fmt.Sprintf("%v", apnsres.msgId)
-				result.Err = apnsres.err
+				if apnsres.err != nil {
+					result := new(PushResult)
+					result.Err = apnsres.err
+					req.resChan<-result
+				}
+
+				switch apnsres.status {
+				case 0:
+					result.Err = nil
+				case 1:
+					result.Err = NewBadDeliveryPointWithDetails(req.dp, "Processing Error")
+				case 2:
+					result.Err = NewBadDeliveryPointWithDetails(req.dp, "Missing Device Token")
+				case 3:
+					result.Err = NewBadNotificationWithDetails("Missing topic")
+				case 4:
+					result.Err = NewBadNotificationWithDetails("Missing payload")
+				case 5:
+					result.Err = NewBadNotificationWithDetails("Invalid token size")
+				case 6:
+					result.Err = NewBadNotificationWithDetails("Invalid topic size")
+				case 7:
+					result.Err = NewBadNotificationWithDetails("Invalid payload size")
+				case 8:
+					result.Err = NewBadDeliveryPointWithDetails(req.dp, "Invalid Token")
+				default:
+					result.Err = fmt.Errorf("Unknown Error: %d", apnsres.status)
+				}
+
 				req.resChan<-result
-				delete(reqIdMap[mid])
+				close(req.resChan)
+				delete(reqIdMap, apnsres.msgId)
 			}
 		}
 	}
 }
 
-func (p *apnsPushService) singlePush(sp *PushServiceProvider,
-	s *DeliveryPoint,
-	n *Notification) (string, error) {
-	devtoken := s.FixedData["devtoken"]
-	btoken, err := hex.DecodeString(devtoken)
-	if err != nil {
-		return "", NewInvalidDeliveryPointError(sp, s, err)
-	}
-
-	bpayload, err := toAPNSPayload(n)
-	if err != nil {
-		return "", NewInvalidNotification(sp, s, n, err)
-	}
-	buffer := bytes.NewBuffer([]byte{})
-	// command
-	binary.Write(buffer, binary.BigEndian, uint8(1))
-
-	// transaction id
-	mid := atomic.AddUint32(&(p.nextid), 1)
-	if smid, ok := n.Data["id"]; ok {
-		imid, err := strconv.ParseUint(smid, 10, 0)
-		if err == nil {
-			mid = uint32(imid)
-		}
-	}
-	binary.Write(buffer, binary.BigEndian, mid)
-
-	// Expiry
-	expiry := uint32(time.Now().Second() + 60*60)
-
-	if sexpiry, ok := n.Data["expiry"]; ok {
-		uiexp, err := strconv.ParseUint(sexpiry, 10, 0)
-		if err == nil {
-			expiry = uint32(uiexp)
-		}
-	}
-	binary.Write(buffer, binary.BigEndian, expiry)
-
-	// device token
-	binary.Write(buffer, binary.BigEndian, uint16(len(btoken)))
-	binary.Write(buffer, binary.BigEndian, btoken)
-
-	// payload
-	binary.Write(buffer, binary.BigEndian, uint16(len(bpayload)))
-	binary.Write(buffer, binary.BigEndian, bpayload)
-	pdu := buffer.Bytes()
-
-	tlsconn, err := p.getConn(sp)
-	if err != nil {
-		return "", err
-	}
-
-	for i := 0; i < 2; i++ {
-		err = writen(tlsconn, pdu)
-		if err != nil {
-			tlsconn, err = p.reconnect(sp)
-			if err != nil {
-				return "", err
-			}
-		} else {
-			break
-		}
-	}
-
-	if err != nil {
-		return "", err
-	}
-
-	id := fmt.Sprintf("apns:%s-%d", sp.Name(), mid)
-	go p.waitError(id, tlsconn, sp, s, n)
-	return id, nil
-}
