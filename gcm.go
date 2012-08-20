@@ -227,7 +227,7 @@ func (self *gcmPushService) multicast(psp *PushServiceProvider, dpList []*Delive
 		fallthrough
 	case 500:
 		/* TODO extract the retry after field */
-		after, _  := time.ParseDuration("2s")
+		after := 0 * time.Second
 		for _, dp := range dpList {
 			res := new(PushResult)
 			res.Provider = psp
