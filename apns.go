@@ -232,7 +232,10 @@ func (self *apnsPushService) Push(psp *PushServiceProvider, dpQueue <-chan *Deli
 	/* First, get the request channel */
 	ch := self.getRequestChannel(psp)
 
+	wg := new(sync.WaitGroup)
+
 	for dp := range dpQueue {
+		wg.Add(1)
 		go func () {
 			resultChannel := make(chan *PushResult, 1)
 			req := new(pushRequest)
@@ -252,9 +255,12 @@ func (self *apnsPushService) Push(psp *PushServiceProvider, dpQueue <-chan *Deli
 
 				}
 			}
+			wg.Done()
 
 		}()
 	}
+
+	wg.Wait()
 }
 
 func (self *apnsPushService) resultCollector(psp *PushServiceProvider, resChan chan<- *apnsResult) {
@@ -267,27 +273,11 @@ func (self *apnsPushService) resultCollector(psp *PushServiceProvider, resChan c
 	}
 
 	for {
-		readb := make([]byte, 6)
-		nr, err := c.Read(readb[:])
-		if err != nil {
-			res := new(apnsResult)
-			res.err = NewConnectionError(err)
-			resChan<-res
-			continue
-		}
-		if nr != 6 {
-			res := new(apnsResult)
-			res.err = NewConnectionError(fmt.Errorf("[APNS] Received %v bytes", nr))
-			resChan<-res
-			continue
-		}
-
-		buf := bytes.NewBuffer(readb)
 		var cmd uint8
 		var status uint8
 		var msgid uint32
 
-		err = binary.Read(buf, binary.BigEndian, &cmd)
+		err = binary.Read(c, binary.BigEndian, &cmd)
 		if err != nil {
 			res := new(apnsResult)
 			res.err = NewConnectionError(err)
@@ -295,7 +285,7 @@ func (self *apnsPushService) resultCollector(psp *PushServiceProvider, resChan c
 			continue
 		}
 
-		err = binary.Read(buf, binary.BigEndian, &status)
+		err = binary.Read(c, binary.BigEndian, &status)
 		if err != nil {
 			res := new(apnsResult)
 			res.err = NewConnectionError(err)
@@ -303,7 +293,7 @@ func (self *apnsPushService) resultCollector(psp *PushServiceProvider, resChan c
 			continue
 		}
 
-		err = binary.Read(buf, binary.BigEndian, &msgid)
+		err = binary.Read(c, binary.BigEndian, &msgid)
 		if err != nil {
 			res := new(apnsResult)
 			res.err = NewConnectionError(err)
@@ -428,11 +418,12 @@ func (self *apnsPushService) pushWorker(psp *PushServiceProvider, reqChan chan *
 				result.Content = req.notif
 				result.Provider = psp
 				result.Destination = req.dp
-				result.MsgId = fmt.Sprintf("%v", apnsres.msgId)
+				result.MsgId = fmt.Sprintf("apns:%v-%v", psp.Name(), apnsres.msgId)
 				if apnsres.err != nil {
 					result := new(PushResult)
 					result.Err = apnsres.err
 					req.resChan<-result
+					continue
 				}
 
 				switch apnsres.status {
