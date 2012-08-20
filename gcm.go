@@ -352,7 +352,13 @@ func (self *gcmPushService) Push(psp *PushServiceProvider, dpQueue <-chan *Deliv
 
 		if len(dpList) >= maxNrDst {
 			self.multicast(psp, dpList, resQueue, notif)
+			dpList = dpList[:0]
 		}
 	}
+	if len(dpList) > 0 {
+		self.multicast(psp, dpList, resQueue, notif)
+	}
+
+	close(resQueue)
 }
 

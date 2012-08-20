@@ -261,6 +261,7 @@ func (self *apnsPushService) Push(psp *PushServiceProvider, dpQueue <-chan *Deli
 	}
 
 	wg.Wait()
+	close(resQueue)
 }
 
 func (self *apnsPushService) resultCollector(psp *PushServiceProvider, resChan chan<- *apnsResult) {
