@@ -323,7 +323,7 @@ func (self *gcmPushService) multicast(psp *PushServiceProvider, dpList []*Delive
 			res.Provider = psp
 			res.Content = notif
 			res.Destination = dp
-			res.MsgId = msgid
+			res.MsgId = fmt.Sprintf("c2dm:%v:%v", psp.Name(), msgid)
 			resQueue<-res
 		}
 	}
