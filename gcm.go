@@ -335,6 +335,16 @@ func (self *gcmPushService) Push(psp *PushServiceProvider, dpQueue <-chan *Deliv
 	maxNrDst := 1000
 	dpList := make([]*DeliveryPoint, 0, maxNrDst)
 	for dp := range dpQueue {
+
+		if psp.PushServiceName() != dp.PushServiceName() || psp.PushServiceName() != self.Name() {
+			res := new(PushResult)
+			res.Provider = psp
+			res.Destination = dp
+			res.Content = notif
+			res.Err = NewIncompatibleError()
+			resQueue<-res
+			continue
+		}
 		if _, ok := dp.VolatileData["regid"]; ok {
 			dpList = append(dpList, dp)
 		} else if regid, ok := dp.FixedData["regid"]; ok {
