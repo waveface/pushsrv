@@ -48,7 +48,6 @@ type apnsPushService struct {
 
 	connChan map[string]chan *pushRequest
 	chanLock *sync.Mutex
-	pfp    PushFailureHandler
 }
 
 func InstallAPNS() {
@@ -66,10 +65,6 @@ func newAPNSPushService() *apnsPushService {
 
 func (p *apnsPushService) Name() string {
 	return "apns"
-}
-
-func (p *apnsPushService) SetAsyncFailureHandler(pfp PushFailureHandler) {
-	p.pfp = pfp
 }
 
 func (p *apnsPushService) Finalize() {

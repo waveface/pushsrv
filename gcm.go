@@ -46,9 +46,6 @@ func InstallGCM() {
 	psm.RegisterPushServiceType(newGCMPushService())
 }
 
-func (p *gcmPushService) SetAsyncFailureHandler(pf PushFailureHandler) {
-}
-
 func (p *gcmPushService) Finalize() {}
 
 func (p *gcmPushService) BuildPushServiceProviderFromMap(kv map[string]string,
