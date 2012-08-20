@@ -74,60 +74,6 @@ func (p *apnsPushService) Finalize() {
 		c.Close()
 	}
 }
-
-func (p *apnsPushService) waitError(id string,
-	c net.Conn,
-	psp *PushServiceProvider,
-	dp *DeliveryPoint,
-	n *Notification) {
-	duration, err := time.ParseDuration("5s")
-	if err != nil {
-		return
-	}
-	deadline := time.Now().Add(duration)
-	//c.SetReadTimeout(5E9)
-	err = c.SetDeadline(deadline)
-	if err != nil {
-		return
-	}
-	readb := [6]byte{}
-	nr, err := c.Read(readb[:])
-	if err != nil {
-		return
-	}
-	if nr > 0 {
-		switch readb[1] {
-		case 2:
-			p.pfp.OnPushFail(p,
-				id,
-				NewInvalidDeliveryPointError(psp,
-					dp,
-					errors.New("Missing device token")))
-		case 3:
-			err := NewInvalidNotification(psp, dp, n, errors.New("Missing topic"))
-			p.pfp.OnPushFail(p, id, err)
-		case 4:
-			err := NewInvalidNotification(psp, dp, n, errors.New("Missing payload"))
-			p.pfp.OnPushFail(p, id, err)
-		case 5:
-			err := NewInvalidNotification(psp, dp, n, errors.New("Invalid token size"))
-			p.pfp.OnPushFail(p, id, err)
-		case 6:
-			err := NewInvalidNotification(psp, dp, n, errors.New("Invalid topic size"))
-			p.pfp.OnPushFail(p, id, err)
-		case 7:
-			err := NewInvalidNotification(psp, dp, n, errors.New("Invalid payload size"))
-			p.pfp.OnPushFail(p, id, err)
-		case 8:
-			err := NewInvalidDeliveryPointError(psp, dp, errors.New("Invalid token"))
-			p.pfp.OnPushFail(p, id, err)
-		default:
-			err := errors.New("Unknown Error")
-			p.pfp.OnPushFail(p, id, err)
-		}
-	}
-}
-
 func (p *apnsPushService) BuildPushServiceProviderFromMap(kv map[string]string, psp *PushServiceProvider) error {
 	if service, ok := kv["service"]; ok {
 		psp.FixedData["service"] = service
@@ -287,39 +233,174 @@ func (self *apnsPushService) Push(psp *PushServiceProvider, dpQueue <-chan *Deli
 	/* First, get the request channel */
 	ch := self.getRequestChannel(psp)
 
-	resultChannel := make(chan *PushResult)
-
-	nrMsgs := 0
-	msgMap := make(map[uint32]
-
 	for dp := range dpQueue {
-		req := new(pushRequest)
-		req.dp = dp
-		req.notif = notif
-		req.resChan = resultChannel
-		res.mid := atomic.AddUint32(&(self.nextid), 1)
-		nrMsgs++
+		go func () {
+			resultChannel := make(chan *PushResult, 1)
+			req := new(pushRequest)
+			req.dp = dp
+			req.notif = notif
+			req.resChan = resultChannel
+			res.mid := atomic.AddUint32(&(self.nextid), 1)
 
-		ch<-req
+			ch<-req
+
+			select {
+			case res := <-resultChannel:
+				resQueue <-
+			case <-time.After(time.ParseDuration("5s")):
+				return
+
+			}
+
+		}()
 	}
+}
 
-	for {
-		select {
-		case res := <-resultChannel:
-			resQueue <- res
-		case <-time.After(time.ParseDuration("5s"))
-			break
+func (p *apnsPushService) waitError(id string,
+	c net.Conn,
+	psp *PushServiceProvider,
+	dp *DeliveryPoint,
+	n *Notification) {
+	duration, err := time.ParseDuration("5s")
+	if err != nil {
+		return
+	}
+	deadline := time.Now().Add(duration)
+	//c.SetReadTimeout(5E9)
+	err = c.SetDeadline(deadline)
+	if err != nil {
+		return
+	}
+	readb := [6]byte{}
+	nr, err := c.Read(readb[:])
+	if err != nil {
+		return
+	}
+	if nr > 0 {
+		switch readb[1] {
+		case 2:
+			p.pfp.OnPushFail(p,
+				id,
+				NewInvalidDeliveryPointError(psp,
+					dp,
+					errors.New("Missing device token")))
+		case 3:
+			err := NewInvalidNotification(psp, dp, n, errors.New("Missing topic"))
+			p.pfp.OnPushFail(p, id, err)
+		case 4:
+			err := NewInvalidNotification(psp, dp, n, errors.New("Missing payload"))
+			p.pfp.OnPushFail(p, id, err)
+		case 5:
+			err := NewInvalidNotification(psp, dp, n, errors.New("Invalid token size"))
+			p.pfp.OnPushFail(p, id, err)
+		case 6:
+			err := NewInvalidNotification(psp, dp, n, errors.New("Invalid topic size"))
+			p.pfp.OnPushFail(p, id, err)
+		case 7:
+			err := NewInvalidNotification(psp, dp, n, errors.New("Invalid payload size"))
+			p.pfp.OnPushFail(p, id, err)
+		case 8:
+			err := NewInvalidDeliveryPointError(psp, dp, errors.New("Invalid token"))
+			p.pfp.OnPushFail(p, id, err)
+		default:
+			err := errors.New("Unknown Error")
+			p.pfp.OnPushFail(p, id, err)
 		}
 	}
 }
 
-func (self *apnsPushService) resultCollector(psp *PushServiceProvider, resChan chan<- *apnsResult) {
+
+func (self *apnsPushService) resultCollector(psp *PushServiceProvider, resChan chan<- *apnsResult, quit <-chan bool) {
+	c, err := getConn(psp)
+	if err != nil {
+		res := new(apnsResult)
+		res.err = NewConnectionError(err)
+		resChan<-res
+		return
+	}
+
+	for {
+		readb := [6]byte{}
+		nr, err := c.Read(readb[:])
+		if err != nil {
+			res := new(apnsResult)
+			res.err = NewConnectionError(err)
+			resChan<-res
+			continue
+		}
+		if nr != 6 {
+			res := new(apnsResult)
+			res.err = NewConnectionError(fmt.Errorf("[APNS] Received %v bytes", nr))
+			resChan<-res
+			continue
+		}
+
+		buf := bytes.NewBuffer(readb)
+		var cmd uint8
+		var status uint8
+		var msgid uint32
+
+		err = binary.Read(buf, binary.BigEndian, &cmd)
+		if err != nil {
+			res := new(apnsResult)
+			res.err = NewConnectionError(err)
+			resChan<-res
+			continue
+		}
+
+		err = binary.Read(buf, binary.BigEndian, &status)
+		if err != nil {
+			res := new(apnsResult)
+			res.err = NewConnectionError(err)
+			resChan<-res
+			continue
+		}
+
+		err = binary.Read(buf, binary.BigEndian, &msgid)
+		if err != nil {
+			res := new(apnsResult)
+			res.err = NewConnectionError(err)
+			resChan<-res
+			continue
+		}
+
+
+		res := new(apnsResult)
+		res.msgId = msgid
+
+		switch status {
+		case 0:
+			res.err = nil
+		case 2:
+			fallthrough
+		case 8:
+			res.err = NewBadDeliveryPoint(psp)
+		case 3:
+			fallthrough
+		case 4:
+			fallthrough
+		case 5:
+			fallthrough
+		case 6:
+			fallthrough
+		case 7:
+			res.err = NewBadNotification()
+		default:
+			res.err = fmt.Errorf("Unknown Error: %d", status)
+		}
+		resChan<-res
+	}
 }
 
 func (self *apnsPushService) pushWorker(psp *PushServiceProvider, reqChan chan *pushRequest) {
 	resChan := make(chan *apnsResult)
 
 	reqIdMap := make(map[uint32]*pushRequest)
+
+	var connErr error
+
+	connErr = nil
+
 	go resultCollector(psp, resChan)
 	for {
 		select {
@@ -327,17 +408,45 @@ func (self *apnsPushService) pushWorker(psp *PushServiceProvider, reqChan chan *
 			dp := req.dp
 			notif := req.notif
 			mid := req.mid
-			reqIdMap[mid] = req
 
-			self.singlePush(psp, dp, notif, mid)
+			if connErr != nil {
+				result := new(PushResult)
+				result.Content = notif
+				result.Provider = psp
+				result.Destination = dp
+				result.MsgId = fmt.Sprintf("%v", mid)
+				result.Err = connErr
+				req.resChan<-result
+				continue
+			}
+
+			reqIdMap[mid] = req
+			err := self.singlePush(psp, dp, notif, mid)
+
+			if err != nil {
+				result := new(PushResult)
+				result.Content = notif
+				result.Provider = psp
+				result.Destination = dp
+				result.MsgId = fmt.Sprintf("%v", mid)
+				result.Err = err
+				req.resChan<-result
+				delete(reqIdMap[mid])
+			}
+
 		case apnsres := <-resChan:
+			if cerr, ok := apnsres.err.(*ConnectionError); ok {
+				connErr = cerr
+			}
 			if req, ok := reqIdMap[apnsres.msgId]; ok {
 				result := new(PushResult)
 				result.Content = req.notif
 				result.Provider = psp
 				result.Destination = req.dp
-				result.MsgId = fmt.Sprintf("%d", apnsres.msgId)
+				result.MsgId = fmt.Sprintf("%v", apnsres.msgId)
+				result.Err = apnsres.err
 				req.resChan<-result
+				delete(reqIdMap[mid])
 			}
 		}
 	}
