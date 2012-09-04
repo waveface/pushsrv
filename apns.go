@@ -113,6 +113,9 @@ func (p *apnsPushService) BuildDeliveryPointFromMap(kv map[string]string, dp *De
 		return errors.New("NoSubscriber")
 	}
 	if devtoken, ok := kv["devtoken"]; ok && len(devtoken) > 0 {
+		if len(devtoken) != 40 {
+			return fmt.Errorf("Dev token %v is invalid: it should be 40 characters", devtoken)
+		}
 		dp.FixedData["devtoken"] = devtoken
 	} else {
 		return errors.New("NoDevToken")
