@@ -27,6 +27,7 @@ import (
 	. "github.com/uniqush/pushsys"
 	"io/ioutil"
 	"net/http"
+	"strconv"
 )
 
 const (
@@ -140,8 +141,8 @@ func (self *gcmPushService) multicast(psp *PushServiceProvider, dpList []*Delive
 	data := new(gcmData)
 	data.RegIDs = regIds
 
-	// TODO do something with ttl and delay_while_idle
-	data.TimeToLive = 0
+	// TTL: default is one hour
+	data.TimeToLive = 60 * 60
 	data.DelayWhileIdle = false
 
 	if mgroup, ok := msg["msggroup"]; ok {
@@ -157,6 +158,12 @@ func (self *gcmPushService) multicast(psp *PushServiceProvider, dpList []*Delive
 		switch k {
 		case "msggroup":
 			continue
+		case "ttl":
+			ttl, err := strconv.ParseUint(v, 10, 32)
+			if err != nil {
+				continue
+			}
+			data.TimeToLive = uint(ttl)
 		default:
 			data.Data[k] = v
 		}

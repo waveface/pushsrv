@@ -143,6 +143,8 @@ func toAPNSPayload(n *Notification) ([]byte, error) {
 			continue
 		case "expiry":
 			continue
+		case "ttl":
+			continue
 		default:
 			payload[k] = v
 		}
@@ -331,8 +333,15 @@ func (self *apnsPushService) singlePush(psp *PushServiceProvider, dp *DeliveryPo
 	// transaction id
 	binary.Write(buffer, binary.BigEndian, mid)
 
-	// TODO Expiry
-	expiry := uint32(time.Now().Second() + 60*60)
+	// Expiry: default is one hour
+	unixNow := uint32(time.Now().Unix())
+	expiry := unixNow + 60*60
+	if ttlstr, ok := notif.Data["ttl"]; ok {
+		ttl, err := strconv.ParseUint(ttlstr, 10, 32)
+		if err == nil {
+			expiry = unixNow + uint32(ttl)
+		}
+	}
 	binary.Write(buffer, binary.BigEndian, expiry)
 
 	// device token
