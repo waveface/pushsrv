@@ -172,6 +172,14 @@ func toAPNSPayload(n *Notification) ([]byte, error) {
 		switch k {
 		case "msg":
 			alert["body"] = v
+		case "loc-key":
+			alert[k] = v
+		case "loc-args":
+			args, err := toLocArgs(v);
+			if err != nil {
+				continue;
+			}
+			alert[k] = args
 		case "badge":
 			b, err := strconv.Atoi(v)
 			if err != nil {
