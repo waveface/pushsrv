@@ -180,6 +180,11 @@ func toAPNSPayload(n *Notification) ([]byte, error) {
 				continue;
 			}
 			alert[k] = args
+		case "loc-msg":
+			err := ApplyAlertLocMsg(alert, v)
+			if err != nil {
+				return nil, err
+			}
 		case "badge":
 			b, err := strconv.Atoi(v)
 			if err != nil {
